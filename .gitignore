@@ -1,0 +1,7 @@
+.idea
+models
+temp
+__pycache__
+outputs
+uploads
+*.pyc
