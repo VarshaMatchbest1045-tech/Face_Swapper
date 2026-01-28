@@ -147,3 +147,13 @@ def conditional_download(download_directory_path: str, urls: List[str]) -> None:
 
 def resolve_relative_path(path: str) -> str:
     return os.path.abspath(os.path.join(os.path.dirname(__file__), path))
+
+
+def get_video_duration(target_path: str) -> float:
+    command = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', target_path]
+    try:
+        output = subprocess.check_output(command).decode().strip()
+        return float(output)
+    except Exception:
+        pass
+    return 0.0

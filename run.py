@@ -11,7 +11,10 @@ import uvicorn
 import faceswapper_core.globals
 import faceswapper_core.core
 import faceswapper_core.metadata
+import faceswapper_core.utilities
 from faceswapper_core.processors.frame.core import get_frame_processors_modules
+import credit_service
+import math
 
 app = FastAPI(title="FaceSwapper API", version=faceswapper_core.metadata.version)
 
@@ -42,6 +45,7 @@ def read_root():
 def swap_faces(
     source: UploadFile = File(...),
     target: UploadFile = File(...),
+    user_id: str = Form(...),
     face_enhancer: bool = Form(False),
     keep_fps: bool = Form(True),
     skip_audio: bool = Form(False),
@@ -62,8 +66,10 @@ def swap_faces(
     target_ext = target.filename.split('.')[-1] if '.' in target.filename else "mp4"
     
     # Simple validation based on extension
+    is_image = False
     if target_ext.lower() in ['png', 'jpg', 'jpeg', 'bmp', 'tiff']:
         output_ext = target_ext
+        is_image = True
     else:
         output_ext = "mp4"
 
@@ -77,6 +83,41 @@ def swap_faces(
             shutil.copyfileobj(source.file, f)
         with open(target_path, "wb") as f:
             shutil.copyfileobj(target.file, f)
+
+        # --- Credit System Logic ---
+        cost = 0
+        resource_type = "image_generation"
+        
+        if is_image:
+            cost = 300
+        else:
+            resource_type = "video_generation"
+            duration = faceswapper_core.utilities.get_video_duration(target_path)
+            # Fallback for video duration issue, treat as at least 1 second
+            if duration <= 0:
+                print(f"Warning: Could not determine duration for video {target_path}, assuming 1s")
+                duration = 1.0
+            
+            # 300 credits per second
+            cost = int(math.ceil(duration)) * 300
+            print(f"Video duration: {duration}s, Cost: {cost}")
+
+        print(f"Checking credits for user {user_id}. Cost: {cost}")
+        try:
+            balance_resp = credit_service.get_user_balance(user_id)
+            # API response structure check: { "ok": true, "data": { "balance": ... } }
+            balance = balance_resp.get("data", {}).get("balance", 0)
+            print(f"User balance: {balance}")
+            
+            if balance < cost:
+                raise HTTPException(status_code=402, detail=f"Insufficient credits. Required: {cost}, Available: {balance}")
+                
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"Credit check failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Credit verification failed: {str(e)}")
+        # ---------------------------
 
         # Acquire lock and process
         # This block is synchronous and will block the thread, effectively queuing requests
@@ -123,6 +164,20 @@ def swap_faces(
 
         # Check if output exists
         if os.path.exists(output_path):
+            # --- Deduct Credits ---
+            try:
+                print(f"Deducting {cost} credits for user {user_id}")
+                credit_service.deduct_credits(
+                    user_id=user_id, 
+                    amount=cost, 
+                    resource_type=resource_type, 
+                    resource_id=f"swap_{session_id}"
+                )
+            except Exception as e:
+                # Log this! User got service but wasn't charged.
+                print(f"CRITICAL: Failed to deduct credits after successful generation: {e}")
+            # ----------------------
+            
             return FileResponse(output_path, media_type="application/octet-stream", filename=f"swapped_{target.filename}")
         else:
             raise HTTPException(status_code=500, detail="Processing failed, no output generated. Check server logs.")
